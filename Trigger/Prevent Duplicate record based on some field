@@ -1,0 +1,100 @@
+#Prevent Duplicate Contact creation based on Email
+
+trigger ContactTrigger on Contact (before insert, before update) {
+    if (Trigger.isBefore && (Trigger.isInsert || Trigger.isUpdate)) {
+        ContactTriggerHandler.preventDuplicateEmails(Trigger.newMap, Trigger.oldMap);
+    }
+}
+----------------------------------------------------------------------------------------------
+public class ContactTriggerHandler {
+
+    /**
+     * Prevent creation or update of Contacts with duplicate Email.
+     * Validates both database duplicates AND duplicates inside the same transaction.
+     */
+    public static void preventDuplicateEmails(
+        Map<Id, Contact> newMap,
+        Map<Id, Contact> oldMap
+    ) {
+        Map<String, Id> emailToContactIdInTrigger = new Map<String, Id>();
+        Set<String> emailsToCheckInDB = new Set<String>();
+
+        /* -------------------------------------------------------
+           1. Collect emails entered in the trigger context
+        -------------------------------------------------------- */
+        for (Contact con : newMap.values()) {
+
+            // Skip null emails
+            if (String.isBlank(con.Email)) {
+                continue;
+            }
+
+            String emailLower = con.Email.trim().toLowerCase();
+
+            // Check duplicate in SAME transaction
+            if (emailToContactIdInTrigger.containsKey(emailLower)) {
+                con.addError('A Contact with this Email already exists in this batch.');
+                continue;
+            }
+
+            emailToContactIdInTrigger.put(emailLower, con.Id);
+
+            // Check duplicates in DATABASE
+            // For updates: skip if email hasn't changed
+            if (oldMap != null && oldMap.containsKey(con.Id)) {
+                if (oldMap.get(con.Id).Email != null &&
+                    oldMap.get(con.Id).Email.toLowerCase() == emailLower) {
+                    continue;  // no change → no need to validate again
+                }
+            }
+
+            emailsToCheckInDB.add(emailLower);
+        }
+
+        // Nothing to validate
+        if (emailsToCheckInDB.isEmpty()) {
+            return;
+        }
+
+        /* -------------------------------------------------------
+           2. Query existing Contacts with these emails
+        -------------------------------------------------------- */
+        List<Contact> existingContacts = [
+            SELECT Id, Email
+            FROM Contact
+            WHERE Email IN :emailsToCheckInDB
+        ];
+
+        Set<String> existingEmails = new Set<String>();
+        for (Contact con : existingContacts) {
+            if (!String.isBlank(con.Email)) {
+                existingEmails.add(con.Email.trim().toLowerCase());
+            }
+        }
+
+        /* -------------------------------------------------------
+           3. Apply errors to duplicates found in DB
+        -------------------------------------------------------- */
+        for (Contact con : newMap.values()) {
+
+            if (String.isBlank(con.Email)) {
+                continue;
+            }
+
+            String emailLower = con.Email.trim().toLowerCase();
+
+            if (existingEmails.contains(emailLower)) {
+
+                // If it's an update, allow same record to keep same email
+                if (oldMap != null && oldMap.containsKey(con.Id)) {
+                    String oldEmail = oldMap.get(con.Id).Email;
+                    if (oldEmail != null && oldEmail.toLowerCase() == emailLower) {
+                        continue; // unchanged → allowed
+                    }
+                }
+
+                con.addError('A Contact with this Email already exists.');
+            }
+        }
+    }
+}
