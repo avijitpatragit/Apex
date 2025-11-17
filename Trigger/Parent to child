@@ -1,0 +1,55 @@
+Whenever a Accounts phone will be updated, then All the Child Contact phone field also get updated.
+trigger AccountTrigger on Account (after update) {
+    if (Trigger.isAfter && Trigger.isUpdate) {
+        AccountTriggerHandler.updateChildContactPhones(Trigger.oldMap, Trigger.newMap);
+    }
+}
+------------------------------------------------------------------------------------------------------------------
+public class AccountTriggerHandler {
+
+    // Set to track accounts already processed (recursion prevention)
+    private static Set<Id> processedAccountIds = new Set<Id>();
+
+    public static void updateChildContactPhones(
+        Map<Id, Account> oldMap,
+        Map<Id, Account> newMap
+    ) {
+        // Identify accounts whose phone actually changed
+        Map<Id, String> accountsToProcess = new Map<Id, String>();
+
+        for (Id accId : newMap.keySet()) {
+            Account oldAcc = oldMap.get(accId);
+            Account newAcc = newMap.get(accId);
+
+            // Phone changed AND not processed earlier → safe to run
+            if (oldAcc.Phone != newAcc.Phone && !processedAccountIds.contains(accId)) {
+                accountsToProcess.put(accId, newAcc.Phone);
+            }
+        }
+
+        // Nothing to do
+        if (accountsToProcess.isEmpty()) {
+            return;
+        }
+
+        // Query all related contacts in bulk
+        List<Contact> contactsToUpdate = [
+            SELECT Id, Phone, AccountId
+            FROM Contact
+            WHERE AccountId IN :accountsToProcess.keySet()
+        ];
+
+        // Update child contacts
+        for (Contact con : contactsToUpdate) {
+            con.Phone = accountsToProcess.get(con.AccountId);
+        }
+
+        // Mark accounts as processed BEFORE performing DML → prevents recursion
+        processedAccountIds.addAll(accountsToProcess.keySet());
+
+        // Perform DML
+        if (!contactsToUpdate.isEmpty()) {
+            update contactsToUpdate;
+        }
+    }
+}
