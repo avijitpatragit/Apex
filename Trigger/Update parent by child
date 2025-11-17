@@ -1,0 +1,73 @@
+Update Account Description when contact Description got changed
+
+trigger ContactTrigger on Contact (after update) {
+    if (Trigger.isAfter && Trigger.isUpdate) {
+        ContactTriggerHandler.updateParentAccountDescription(Trigger.oldMap, Trigger.newMap);
+    }
+}
+---------------------------------------------------------------------------------------------------------
+public class ContactTriggerHandler {
+
+    // Recursion guard: track Accounts already updated in this transaction
+    private static Set<Id> processedAccountIds = new Set<Id>();
+
+    /**
+     * Updates Account.Description whenever Contact.Description changes.
+     */
+    public static void updateParentAccountDescription(
+        Map<Id, Contact> oldMap,
+        Map<Id, Contact> newMap
+    ) {
+        // Map<AccountId, New Description>
+        Map<Id, String> accountsToUpdate = new Map<Id, String>();
+
+        // Step 1: Identify contacts where description actually changed
+        for (Id conId : newMap.keySet()) {
+            Contact oldCon = oldMap.get(conId);
+            Contact newCon = newMap.get(conId);
+
+            // Skip if description unchanged
+            if (oldCon.Description == newCon.Description) {
+                continue;
+            }
+
+            // Skip if contact has no parent account
+            if (newCon.AccountId == null) {
+                continue;
+            }
+
+            // Skip if already processed in recursion
+            if (processedAccountIds.contains(newCon.AccountId)) {
+                continue;
+            }
+
+            // Prepare to update account description
+            accountsToUpdate.put(newCon.AccountId, newCon.Description);
+        }
+
+        // Nothing to do
+        if (accountsToUpdate.isEmpty()) {
+            return;
+        }
+
+        // Step 2: Query all affected accounts
+        List<Account> accounts = [
+            SELECT Id, Description
+            FROM Account
+            WHERE Id IN :accountsToUpdate.keySet()
+        ];
+
+        // Step 3: Update accounts
+        for (Account acc : accounts) {
+            acc.Description = accountsToUpdate.get(acc.Id);
+        }
+
+        // Add to recursion guard
+        processedAccountIds.addAll(accountsToUpdate.keySet());
+
+        // Step 4: DML
+        if (!accounts.isEmpty()) {
+            update accounts;
+        }
+    }
+}
