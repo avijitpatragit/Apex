@@ -1,0 +1,107 @@
+update number of contact count in parent Account  
+
+trigger ContactTrigger on Contact (
+    after insert,
+    after update,
+    after delete,
+    after undelete
+) {
+    if (Trigger.isAfter) {
+        ContactTriggerHandler.updateAccountContactCount(
+            Trigger.oldMap,
+            Trigger.newMap
+        );
+    }
+}
+--------------------------------------------------------------------------------------
+public class ContactTriggerHandler {
+
+    // Recursion guard (no boolean flags, best practice)
+    private static Set<Id> processedAccountIds = new Set<Id>();
+
+    /**
+     * Main method: Recalculate Contact Count on parent Accounts.
+     * Trigger Events: After Insert, After Update, After Delete, After Undelete
+     */
+    public static void updateAccountContactCount(
+        Map<Id, Contact> oldMap,
+        Map<Id, Contact> newMap
+    ) {
+        // Holds all Accounts whose Contact count must be recalculated
+        Set<Id> accountIdsToRecalculate = new Set<Id>();
+
+        /* -------------------------------------------------------
+           1. INSERT / UPDATE / UNDELETE (have newMap values)
+        -------------------------------------------------------- */
+        if (newMap != null) {
+            for (Contact newCon : newMap.values()) {
+
+                Id newAccId = newCon.AccountId;
+                Id oldAccId = (oldMap != null && oldMap.containsKey(newCon.Id))
+                                ? oldMap.get(newCon.Id).AccountId 
+                                : null;
+
+                // CASE A — INSERT or UNDELETE
+                if (oldAccId == null && newAccId != null) {
+                    if (!processedAccountIds.contains(newAccId)) {
+                        accountIdsToRecalculate.add(newAccId);
+                    }
+                }
+
+                // CASE B — UPDATE (AccountId Changed)
+                if (oldAccId != null && oldAccId != newAccId) {
+                    if (oldAccId != null && !processedAccountIds.contains(oldAccId)) {
+                        accountIdsToRecalculate.add(oldAccId);
+                    }
+                    if (newAccId != null && !processedAccountIds.contains(newAccId)) {
+                        accountIdsToRecalculate.add(newAccId);
+                    }
+                }
+            }
+        }
+
+        /* -------------------------------------------------------
+           2. DELETE (no newMap, only oldMap)
+        -------------------------------------------------------- */
+        if (newMap == null && oldMap != null) {
+            for (Contact oldCon : oldMap.values()) {
+                if (oldCon.AccountId != null &&
+                    !processedAccountIds.contains(oldCon.AccountId)) {
+                    accountIdsToRecalculate.add(oldCon.AccountId);
+                }
+            }
+        }
+
+        // No recalculation needed
+        if (accountIdsToRecalculate.isEmpty()) {
+            return;
+        }
+
+        /* -------------------------------------------------------
+           3. Query Accounts + Child Contacts
+        -------------------------------------------------------- */
+        List<Account> accountsToUpdate = [
+            SELECT Id,
+                   Contact_Count__c,
+                   (SELECT Id FROM Contacts)
+            FROM Account
+            WHERE Id IN :accountIdsToRecalculate
+        ];
+
+        /* -------------------------------------------------------
+           4. Recalculate Contact Counts
+        -------------------------------------------------------- */
+        for (Account acc : accountsToUpdate) {
+            acc.Contact_Count__c = acc.Contacts.size();
+        }
+
+        /* -------------------------------------------------------
+           5. Recursion Guard + DML
+        -------------------------------------------------------- */
+        processedAccountIds.addAll(accountIdsToRecalculate);
+
+        if (!accountsToUpdate.isEmpty()) {
+            update accountsToUpdate;
+        }
+    }
+}
